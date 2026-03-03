@@ -1,0 +1,88 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: pgvector-db
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+      POSTGRES_DB: ragdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+
+  classificator:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    env_file:
+      - .env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities:
+                - gpu
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./models:/models
+    restart: unless-stopped
+    command: "-m /models/${MODEL_CLASSIFICATION} ${CLI_ARGS_CLASSIF}"
+
+  retrieval:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    env_file:
+      - .env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities:
+                - gpu
+    ports:
+      - "8082:8082"
+    volumes:
+      - ./models:/models
+    restart: unless-stopped
+    command: "-m /models/${MODEL_RETRIEVAL} ${CLI_ARGS_RETRIEVAL}"
+
+  llm:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    env_file:
+      - .env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities:
+                - gpu
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/models
+    restart: unless-stopped
+    command: "-m /models/${MODEL_LLM} ${CLI_ARGS}"
+
+  app:
+    build: .
+    depends_on:
+      - db
+      - retrieval
+      - classificator
+      - llm
+    environment:
+      DATABASE_URL: postgresql://rag:rag@db:5432/ragdb
+      OPENAI_BASE_URL_CLASSIF: http://classificator:8081/v1
+      OPENAI_BASE_URL_RETRIEVE: http://retrieval:8082/v1
+      OPENAI_BASE_URL_LLM: http://llm:8080/v1
+    env_file:
+      - .env
+    volumes:
+      - ./src:/codebase
+      - ./output:/app/docs
+    command: tail -f /dev/null

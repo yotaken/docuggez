@@ -1,0 +1,7 @@
+models
+pgdata
+src
+output
+.idea
+.env
+.git
