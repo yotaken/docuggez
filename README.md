@@ -1,0 +1,2 @@
+# docuggez
+Automatic project documentator
