@@ -10,6 +10,7 @@ services:
       - "5432:5432"
     volumes:
       - ./pgdata:/var/lib/postgresql/data
+      - ./output:/output
 
   classificator:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda
@@ -73,8 +74,8 @@ services:
     depends_on:
       - db
       - retrieval
-      - classificator
       - llm
+      - classificator
     environment:
       DATABASE_URL: postgresql://rag:rag@db:5432/ragdb
       OPENAI_BASE_URL_CLASSIF: http://classificator:8081/v1

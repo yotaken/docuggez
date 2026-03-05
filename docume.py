@@ -1,20 +1,16 @@
 import os
-from sqlalchemy import create_engine, text
-from openai import OpenAI
 from datetime import datetime
+from openai import OpenAI
+from sqlalchemy import create_engine, text
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 MODEL_RETRIEVAL = os.getenv("MODEL_RETRIEVAL")
 OPENAI_BASE_URL_RETRIEVE = os.getenv("OPENAI_BASE_URL_RETRIEVE")
 MODEL_LLM = os.getenv("MODEL_LLM")
 OPENAI_BASE_URL_LLM = os.getenv("OPENAI_BASE_URL_LLM")
+SCOPES = os.getenv("SCOPES")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OUTPUT_DIR = f"/app/docs/{datetime.today()}"
-
-clientEmbeddingRetrieval = OpenAI(
-    base_url=OPENAI_BASE_URL_RETRIEVE,
-    api_key=OPENAI_API_KEY
-)
 
 client = OpenAI(
     base_url=OPENAI_BASE_URL_LLM,
@@ -23,32 +19,31 @@ client = OpenAI(
 
 engine = create_engine(DATABASE_URL)
 
-def embed_query(query):
-    response = clientEmbeddingRetrieval.embeddings.create(
-        model=MODEL_RETRIEVAL,
-        input=query
-    )
-    return response.data[0].embedding
 
 def get_modules():
     with engine.connect() as conn:
         result = conn.execute(text("""
-                                   SELECT DISTINCT module FROM code_chunks
+                                   SELECT DISTINCT module
+                                   FROM code_chunks
                                    """))
         return [r[0] for r in result]
 
-def retrieve_by_module_and_layer(module, layer, limit=20):
+
+def retrieve_endpoint_by_scope(scope, limit=20, offset=0):
     with engine.connect() as conn:
         result = conn.execute(text("""
                                    SELECT content
                                    FROM code_chunks
-                                   WHERE module = :module
-                                     AND layer = :layer
-                                       LIMIT :limit
+                                   WHERE scope = :scope
+                                     AND type = 'class'
+                                     AND entity IS NOT NULL
+                                     AND annotations LIKE '%Path%'
+                                     AND class_name LIKE '%Server%'
+                                   LIMIT :limit OFFSET :offset
                                    """), {
-                                  "module": module,
-                                  "layer": layer,
-                                  "limit": limit
+                                  "scope": scope,
+                                  "limit": limit,
+                                  "offset": offset
                               })
         return [r[0] for r in result]
 
@@ -56,12 +51,14 @@ def generate_section(prompt):
     response = client.chat.completions.create(
         model=MODEL_LLM,
         messages=[
-            {"role": "system", "content": "Eres un arquitecto de software experto en JAVA EE, DDD, CQRS, JPA y RabbitMQ."},
+            {"role": "system",
+             "content": "Actúa como un arquitecto de software senior con amplios conocimientos en DDD (Domain Driven Design), JAVA EE, DDD, CQRS, etc. Además eres excelente analista técnico motivado por el movimiento Software Craftsmanship."},
             {"role": "user", "content": prompt}
         ],
         temperature=0.2
     )
     return response.choices[0].message.content
+
 
 def write_md(filename, content):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -69,45 +66,42 @@ def write_md(filename, content):
     with open(path, "a", encoding="utf-8") as f:
         f.write(content + "\n\n")
 
-def generate_module_documentation(module):
-    filename = f"{module}.md"
 
-    write_md(filename, f"# Documentación del Módulo: {module}")
+def generate_scope_documentation(scope):
+    filename = f"{scope}.md"
+
+    write_md(filename, f"# Documentación del Scope: {scope}")
     write_md(filename, f"_Generado: {datetime.now()}_\n")
-
-    layers = ["interface", "application", "domain", "infrastructure", "test"]
-
-    for layer in layers:
-        print(f"Generando documentación {module} - {layer}")
-
-        chunks = retrieve_by_module_and_layer(module, layer, limit=25)
-
-        if not chunks:
-            continue
-
+    chunks = 'true'
+    offset = 0
+    while chunks:
+        chunks = retrieve_endpoint_by_scope(scope, limit=25, offset=offset)
+        offset += 25
+        if chunks is None or len(chunks) == 0:
+            print(f"Finalizando {scope}...")
+            break
         context = "\n\n".join(chunks)
-
         prompt = f"""
-        Analiza el siguiente código perteneciente al módulo {module}
-        en la capa {layer}.
-
+        Analiza el siguiente código perteneciente al scope {scope}.
+    
         {context}
-
-        Genera:
-
-        - Responsabilidad de la capa
-        - Componentes principales
-        - Clases relevantes
-        - Flujos de ejecución
-        - Eventos RabbitMQ si existen
-        - Uso de JPA si aplica
+    
+        Genera:            
+        - Resumen de casos de Uso
+        - Responsabilidades
+        - Para bloque del scope:
+            - Nombre del caso de uso: Descripción clara del objetivo
+            - Funcionalidad detallada            
+            - Endpoint (notación @Path): Endpoints o métodos expuestos (GET, POST, PUT, DELETE, etc.)
+            - Descripción de la funcionalidad
         - Observaciones arquitectónicas
         """
 
         section = generate_section(prompt)
-
-        write_md(filename, f"## Capa: {layer}")
+        print(f"Seguimos en {scope}...")
+        write_md(filename, f"## Scope: {scope}")
         write_md(filename, section)
+
 
 def generate_global_architecture():
     filename = "00_arquitectura_general.md"
@@ -117,29 +111,69 @@ def generate_global_architecture():
 
     with engine.connect() as conn:
         result = conn.execute(text("""
-                                   SELECT content FROM code_chunks LIMIT 50
+                                   SELECT content
+                                   FROM code_chunks
+                                   WHERE class_name NOT IN ('Builder', 'InstanceFactory')
+                                     and layer IN ('domain', 'infrastructure', 'application')
+                                     AND type = 'class'
+                                     AND scope IS NOT NULL
+                                   LIMIT 50
                                    """))
         chunks = [r[0] for r in result]
 
     context = "\n\n".join(chunks)
 
     prompt = f"""
-    Analiza el siguiente sistema DDD con CQRS.
+    Analiza el siguiente sistema Java EE con DDD.
 
     {context}
 
     Genera:
 
     1. Descripción general
-    2. Bounded contexts detectados
-    3. Patrón CQRS aplicado
-    4. Uso de JPA
-    5. Integraciones RabbitMQ
-    6. Posible arquitectura C4
+    2. Arquitectura del Proyecto
+    3. Describe el patrón de arquitectura utilizado
+    4. Explica la estructura de capas y cómo se comunican entre sí
     """
 
     section = generate_section(prompt)
     write_md(filename, section)
+
+
+def reranking():
+    prompt = f"""
+    Analiza el siguiente documento.
+
+    Devuelve únicamente una lista estructurada de:
+    
+    - Secciones duplicadas
+    - Párrafos redundantes
+    - Explicaciones repetidas
+    - Clases descritas múltiples veces
+    
+    NO reescribas el documento.
+    Solo identifica duplicados.
+    """
+    LISTA_DUPLICADOS = ""
+
+    prompt_secondo = f"""
+    Basándote en el siguiente documento y en esta lista de duplicados detectados:
+
+    {LISTA_DUPLICADOS}
+    
+    Reescribe el documento eliminando únicamente las redundancias indicadas.
+    
+    Reglas:
+    - No elimines información técnica única.
+    - No simplifiques en exceso.
+    - Mantén estructura y nivel de detalle.
+    - No añadas información nueva.
+    - Trabaja únicamente con el contenido proporcionado.
+    
+    Reglas adicionales:
+    - Si dos secciones describen el mismo concepto, mantén la versión más detallada y elimina la más superficial.   
+    """
+    pass
 
 
 if __name__ == "__main__":
@@ -147,9 +181,11 @@ if __name__ == "__main__":
     generate_global_architecture()
 
     modules = get_modules()
-
-    for module in modules:
-        print(f"Generando módulo: {module}")
-        generate_module_documentation(module)
+    # generate_module_documentation(layer)
+    for project_scope in SCOPES:
+        print(f"Generando documentación sobre el scope: {project_scope}")
+        generate_scope_documentation(project_scope)
 
     print(f"Documentación generada en {OUTPUT_DIR}")
+
+    reranking()
